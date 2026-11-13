@@ -63,7 +63,27 @@ journalctl --user -u cc-dash -n 20 --no-pager      # no tracebacks
 
 The first start downloads `aiohttp` into uv's cache and can take ~10 s.
 
-## 5. Tell the user
+## 5. Job tags (optional, ask the user)
+
+Lets sessions mark outstanding GPU runs / cluster jobs so they show up in the sidebar's Jobs
+section. Three pieces, all pointing into the clone:
+
+```sh
+ln -s ~/cc-dash/cc-job ~/.local/bin/cc-job                  # the command sessions run
+mkdir -p ~/.claude/skills && ln -s ~/cc-dash/skills/cc-job ~/.claude/skills/cc-job   # tells sessions when to run it
+cc-job --help                                               # verify (needs ~/.local/bin on PATH)
+```
+
+Optionally auto-tag `sbatch` submissions: add this to the `hooks` of `~/.claude/settings.json`
+(merge with existing hooks; keep the file valid JSON):
+
+```json
+"PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "~/cc-dash/hooks/sbatch-tag.py"}]}]
+```
+
+Verify the hook: `printf '%s' '{"tool_name":"Bash","session_id":"t","tool_input":{"command":"sbatch x"},"tool_response":"Submitted batch job 1"}' | ~/cc-dash/hooks/sbatch-tag.py && cc-job --session t ls && cc-job --session t done`
+
+## 6. Tell the user
 
 - Open http://localhost:8787, or run `~/cc-dash/app.py` for a standalone window (recommended:
   browser tabs swallow Ctrl+W / Ctrl+T / Ctrl+N).

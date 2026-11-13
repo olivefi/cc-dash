@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Tag the current Claude Code session with an outstanding job (GPU run, Euler submission, ...).
+
+  cc-job add <kind> "<what>" [--job ID] [--pid PID] [--for 6h]   tag a job
+  cc-job done [ID]                                               resolve one job, or all of this session's
+  cc-job ls                                                      list this session's jobs
+
+The session is taken from $CLAUDE_CODE_SESSION_ID (set inside Claude Code), or --session <id>.
+A job becomes "due" in the cc-dash sidebar when its --for timer runs out or its --pid exits.
+"""
+import argparse
+import json
+import os
+import re
+import secrets
+import sys
+import time
+from pathlib import Path
+
+JOBS = Path.home() / ".cache" / "cc-dash" / "jobs"
+
+
+def duration(s):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([smhd]?)", s)
+    if not m:
+        raise argparse.ArgumentTypeError("use e.g. 90m, 6h, 2d")
+    return float(m[1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 60}[m[2]]
+
+
+def main():
+    p = argparse.ArgumentParser(prog="cc-job", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--session", default=os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    sub = p.add_subparsers(dest="cmd", required=True)
+    a = sub.add_parser("add")
+    a.add_argument("kind", help="e.g. gpu, euler")
+    a.add_argument("what", help="short description")
+    a.add_argument("--job", help="cluster job id")
+    a.add_argument("--pid", type=int, help="local process; the job is due once it exits")
+    a.add_argument("--for", dest="for_", type=duration, help="expected runtime; due afterwards (e.g. 6h)")
+    d = sub.add_parser("done")
+    d.add_argument("id", nargs="?")
+    sub.add_parser("ls")
+    args = p.parse_args()
+    if not args.session:
+        sys.exit("cc-job: not inside a Claude Code session; pass --session <id>")
+
+    JOBS.mkdir(parents=True, exist_ok=True)
+    path = JOBS / f"{args.session}.json"
+    jobs = json.loads(path.read_text()) if path.exists() else []
+
+    if args.cmd == "add":
+        job = {"id": secrets.token_hex(3), "kind": args.kind, "what": args.what, "job": args.job, "pid": args.pid,
+               "since": time.time(), "due": time.time() + args.for_ if args.for_ else None}
+        same = next((j for j in jobs if args.job and j["job"] == args.job), None)  # e.g. the sbatch hook tagged it already
+        if same:
+            job = same | {k: v for k, v in job.items() if v and k not in ("id", "since")}
+            jobs[jobs.index(same)] = job
+        else:
+            jobs.append(job)
+        print(f"tagged {job['id']}: {args.kind} {args.what}" + (f" (job {args.job})" if args.job else ""))
+    elif args.cmd == "done":
+        left = [j for j in jobs if args.id and j["id"] != args.id]
+        print(f"resolved {len(jobs) - len(left)} job(s)")
+        jobs = left
+    else:
+        for j in jobs:
+            print(j["id"], j["kind"], j["what"], f"job={j['job']}" if j["job"] else "", f"pid={j['pid']}" if j["pid"] else "")
+        return
+
+    if jobs:
+        path.write_text(json.dumps(jobs))
+    else:
+        path.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    main()

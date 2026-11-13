@@ -10,6 +10,8 @@ which ones need you, and all of them in Terminator-style split views in one wind
 - **Work in it:** sessions run inside the dashboard as real terminals, arranged by drag and
   drop into groups of split panes. They live in tmux, so closing the window or restarting
   the server never interrupts them.
+- **Job tags:** sessions mark the GPU runs and cluster jobs they started (`cc-job`), so the
+  sessions that still need resolving are listed at the top, and flagged once a job is due.
 - **Optional [intern-groupchat](https://github.com/olivefi/intern-groupchat) integration:**
   see which sessions you share, share or unshare them, and open coworkers' shared sessions
   as chat panes.
@@ -63,6 +65,23 @@ In a terminal, Shift+Enter inserts a newline.
 A closed session in a group shows its summary and **Resume here**. A session running in an
 ordinary terminal can't be embedded; exit it there and resume it here.
 
+### Jobs
+
+Sessions tag work that outlives their turn, normally on their own via the `cc-job` skill:
+
+```sh
+cc-job add gpu "train slope policy" --for 3h        # due after 3 h
+cc-job add euler "drop sweep" --job 5551234 --for 8h
+cc-job add gpu "sim recording" --pid 12345          # due once the process exits
+cc-job done [id]                                    # resolved
+```
+
+`sbatch` submissions are tagged automatically by a hook. Nothing polls the cluster: a job is
+**running** (▶, blue) until its timer runs out or its process exits, then **due** (⏰, orange)
+until the session runs `cc-job done` or you click ✓ on the badge. Sessions with jobs are listed
+in the **Jobs** section at the top of the sidebar, open or closed, due ones first, and their
+panes show the badges in the header.
+
 ### From a terminal
 
 Dashboard sessions are ordinary tmux sessions on their own socket:
@@ -87,7 +106,8 @@ them off under ⚙; the per-session **Summarize** button still works.
 | `app.py` | standalone GTK WebKit window |
 | `tmux.conf` | config of the dashboard's tmux server |
 | `contrib/cc-dash.service` | systemd user service |
-| `~/.cache/cc-dash/` | state (groups, stars, notes, favorites, settings) and summaries |
+| `cc-job`, `skills/cc-job/`, `hooks/sbatch-tag.py` | job tags: the command, the skill telling sessions to use it, the sbatch auto-tag hook |
+| `~/.cache/cc-dash/` | state (groups, stars, notes, favorites, settings), summaries, job tags |
 
 The server only listens on 127.0.0.1 and refuses requests from other sites, since it can
 start shells. Don't expose it.

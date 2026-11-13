@@ -26,6 +26,7 @@ CACHE_DIR = Path.home() / ".cache" / "cc-dash"
 SUMMARY_FILE = CACHE_DIR / "summaries.json"
 STATE_FILE = CACHE_DIR / "state.json"
 SUMMARY_WORKDIR = CACHE_DIR / "work"
+JOBS_DIR = CACHE_DIR / "jobs"
 HERE = Path(__file__).parent
 TMUX = ["tmux", "-L", "cc-dash", "-f", str(HERE / "tmux.conf")]
 SHELL = os.environ.get("SHELL", "/bin/zsh")
@@ -177,6 +178,20 @@ def gc_shared():
         return {}
 
 
+def load_jobs():
+    """Jobs sessions tagged themselves with via `cc-job`; due once their timer ran out or their pid exited."""
+    out = {}
+    for f in JOBS_DIR.glob("*.json"):
+        try:
+            jobs = json.loads(f.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        for j in jobs:
+            j["state"] = "due" if (j.get("due") and time.time() > j["due"]) or (j.get("pid") and not pid_alive(j["pid"])) else "running"
+        out[f.stem] = jobs
+    return out
+
+
 def row(**kw):
     return {
         "title": "", "cwd": None, "resume_cwd": None, "resume_cwd_exists": False, "branch": None, "prs": [],
@@ -249,6 +264,9 @@ def session_rows():
             "resume_cmd": f"tmux -L cc-dash attach -t {tmux}" if tmux
             else f"cd {shlex.quote(t.first_cwd or '~')} && claude --resume {t.id}",
         })
+    jobs = load_jobs()
+    for r in rows:
+        r["jobs"] = jobs.get(r["id"], [])
     rows.sort(key=lambda r: r["last_ts"] or "9", reverse=True)
     return rows
 
@@ -350,6 +368,19 @@ async def api_resume(request):
                          start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     elif not hosted:
         tmux_start(sid, t.first_cwd, f"--resume {sid}")
+    return web.json_response({"ok": True})
+
+
+async def api_job_done(request):
+    """Resolve one job of a session (body {"id": ...}) or all of them."""
+    path = JOBS_DIR / f"{request.match_info['id']}.json"
+    job_id = (await request.json()).get("id")
+    jobs = json.loads(path.read_text()) if path.exists() else []
+    left = [j for j in jobs if job_id and j["id"] != job_id]
+    if left:
+        path.write_text(json.dumps(left))
+    else:
+        path.unlink(missing_ok=True)
     return web.json_response({"ok": True})
 
 
@@ -477,6 +508,7 @@ def main():
         web.post("/api/resume/{id}", api_resume),
         web.post("/api/new", api_new),
         web.post("/api/end/{id}", api_end),
+        web.post("/api/jobs/{id}/done", api_job_done),
         web.get("/api/state", api_get_state),
         web.get("/api/gc", api_gc),
         web.post("/api/share/{id}", api_share),

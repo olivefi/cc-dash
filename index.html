@@ -29,7 +29,8 @@
   #side { width: 360px; min-width: 260px; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--panel); }
   #side header { padding: 10px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
   #side header .r { display: flex; gap: 8px; align-items: center; }
-  #side h1 { font-size: 14px; margin: 0; flex: 1; }
+  #side h1 { font-size: 14px; margin: 0; flex: 1; white-space: nowrap; }
+  #side header #counts { text-align: right; }
   #counts { color: var(--muted); font-size: 12px; }
   #side header #newform:not(.open) { display: none; }
   #side header button { white-space: nowrap; }
@@ -46,6 +47,13 @@
   .item.open-detail { background: var(--hover); }
   .k-peer { border-left-color: var(--peer); }
   .shr { color: var(--peer); font-size: 12px; }
+  .jobs { margin: 3px 0 0 20px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .job { font-size: 11px; border: 1px solid var(--busy); color: var(--busy); border-radius: 10px; padding: 0 0 0 7px;
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job.due { background: var(--wait); border-color: var(--wait); color: #fff; }
+  .job button { border: none; padding: 0 6px; font-size: 11px; color: inherit; }
+  .phead .pjobs { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
+  .phead .pjobs .job { max-width: 260px; }
   .share { display: flex; flex-direction: column; gap: 4px; }
   .share input[data-share-with] { flex: 1; min-width: 140px; width: auto; }
   .share label { display: flex; align-items: center; gap: 3px; font-size: 12px; color: var(--muted); }
@@ -221,9 +229,18 @@ function item(r) {
     <div class="row1"><button class="star ${starred(r.id) ? "on" : ""}" data-act="star">${starred(r.id) ? "★" : "☆"}</button>
       <span class="title">${esc(r.title)}</span>${r.shared ? `<span class="shr" title="shared with ${esc(r.shared.acl.join(", "))}">⇄</span>` : ""}<span class="ago">${r.live ? (r.tmux ? "● " : "◌ ") : ""}${ago(r.last_ts)}</span></div>
     <div class="sub">${esc(home(r.cwd))}${r.branch && r.branch !== "HEAD" ? ` · ${esc(r.branch)}` : ""}</div>
+    ${r.jobs?.length ? `<div class="jobs">${jobBadges(r)}</div>` : ""}
     ${line}${note && !open ? `<div class="notepv">✎ ${esc(note.split("\n")[0])}</div>` : ""}
     ${detail}
   </div>`;
+}
+
+function jobBadges(r) {
+  return (r.jobs || []).map(j => {
+    const label = `${j.kind}${j.job ? " " + j.job : ""}`;
+    const tip = `${j.what}\nsince ${new Date(j.since * 1000).toLocaleString()}` + (j.due ? `\ndue ${new Date(j.due * 1000).toLocaleString()}` : "");
+    return `<span class="job ${j.state}" title="${esc(tip)}">${j.state === "due" ? "⏰" : "▶"} ${esc(label)} · ${esc(j.what)}<button data-act="jobdone" data-job="${j.id}" title="Mark resolved">✓</button></span>`;
+  }).join("");
 }
 
 function renderSide() {
@@ -233,20 +250,24 @@ function renderSide() {
   const list = rows.filter(match);
   const cutoff = Date.now() - RECENT_DAYS * 86400e3;
   const order = {wait: 0, busy: 1, idle: 2, closed: 3, peer: 3};
-  const stars = list.filter(r => starred(r.id)).sort((a, b) => order[kind(a)] - order[kind(b)]);
-  const rest = list.filter(r => !starred(r.id));
+  const hasDue = r => r.jobs?.some(j => j.state === "due");
+  const jobs = list.filter(r => r.jobs?.length).sort((a, b) => hasDue(b) - hasDue(a));
+  const stars = list.filter(r => starred(r.id) && !r.jobs?.length).sort((a, b) => order[kind(a)] - order[kind(b)]);
+  const rest = list.filter(r => !starred(r.id) && !r.jobs?.length);
   const peers = rest.filter(r => r.peer);
   const live = rest.filter(r => r.live && !r.peer).sort((a, b) => order[kind(a)] - order[kind(b)]);
   const closed = rest.filter(r => !r.live);
   const recent = closed.filter(r => r.last_ts && new Date(r.last_ts) > cutoff);
   const older = closed.filter(r => !(r.last_ts && new Date(r.last_ts) > cutoff));
   const sec = (t, l) => l.length ? `<h2>${t} (${l.length})</h2>${l.map(item).join("")}` : "";
-  $("#list").innerHTML = sec("★ Starred", stars) + sec("Open", live) + sec("Peers", peers) + sec(`Closed, last ${RECENT_DAYS} days`, recent) +
+  $("#list").innerHTML = sec("Jobs", jobs) + sec("★ Starred", stars) + sec("Open", live) + sec("Peers", peers) + sec(`Closed, last ${RECENT_DAYS} days`, recent) +
     (older.length ? (showOlder || q ? sec("Older", older) : `<h2>Older (${older.length})</h2><div style="padding:4px 12px"><button data-act="older">Show older</button></div>`) : "");
 
   const nWait = rows.filter(r => kind(r) === "wait").length;
-  $("#counts").textContent = `${nWait} need you · ${rows.filter(r => kind(r) === "busy").length} working · ${rows.filter(r => r.live && !r.peer).length} open`;
-  document.title = nWait ? `(${nWait}) Claude Sessions` : "Claude Sessions";
+  const nDue = rows.filter(hasDue).length;
+  $("#counts").textContent = `${nWait} need you · ${rows.filter(r => kind(r) === "busy").length} working · ${rows.filter(r => r.live && !r.peer).length} open`
+    + (nDue ? ` · ${nDue} job${nDue > 1 ? "s" : ""} due` : "");
+  document.title = nWait + nDue ? `(${nWait + nDue}) Claude Sessions` : "Claude Sessions";
   $("#cwds").innerHTML = [...new Set(rows.map(r => home(r.resume_cwd)).filter(Boolean))].map(c => `<option value="${esc(c)}">`).join("");
 }
 
@@ -348,7 +369,7 @@ function getPane(id) {
   const el = document.createElement("div");
   el.className = "pane";
   el.dataset.id = id;
-  el.innerHTML = `<div class="phead" draggable="true"><button class="star" data-act="star"></button><span class="ptitle"></span><span class="pwait"></span>
+  el.innerHTML = `<div class="phead" draggable="true"><button class="star" data-act="star"></button><span class="ptitle"></span><span class="pwait"></span><span class="pjobs"></span>
     <button class="pnotebtn" data-act="note" title="Show / hide note">✎</button>
     <button data-act="split-bottom" title="New Claude below, same folder (Ctrl+Shift+O)">⊟</button>
     <button data-act="split-right" title="New Claude to the right, same folder (Ctrl+Shift+E)">◫</button>
@@ -378,6 +399,8 @@ function updatePane(p) {
   head.style.borderLeftColor = `var(--${k})`;
   head.querySelector(".ptitle").textContent = r ? `${r.title} — ${home(r.cwd)}` : p.id;
   head.querySelector(".pwait").textContent = k === "wait" ? `→ ${r.summary.waiting_reason || "needs you"}` : "";
+  const jobsHtml = r ? jobBadges(r) : "";
+  if (head.querySelector(".pjobs").innerHTML !== jobsHtml) head.querySelector(".pjobs").innerHTML = jobsHtml;
   const st = head.querySelector(".star");
   st.textContent = starred(p.id) ? "★" : "☆";
   st.classList.toggle("on", starred(p.id));
@@ -486,6 +509,7 @@ document.addEventListener("click", async e => {
   }
   if (act === "older") { showOlder = true; renderSide(); }
   if (act === "settings") $("#settings").hidden = !$("#settings").hidden;
+  if (act === "jobdone") { await post(`/api/jobs/${id}/done`, {id: b.dataset.job}); load(); }
   if (act === "note") {
     const p = panes.get(id), nb = p.el.querySelector(".pnote");
     p.noteHidden = !nb.hidden;
