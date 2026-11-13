@@ -207,6 +207,7 @@ function item(r) {
       <div class="actions">
         <button data-act="addcur">Add to “${esc(group()?.name || "")}”</button>
         ${r.live && !r.tmux ? "" : `<button data-act="terminator" ${r.tmux || r.resume_cwd_exists ? "" : "disabled"}>${where}</button>`}
+        ${r.fresh && r.tmux ? `<button data-act="discard" title="End this session; nothing was written to it yet">Discard</button>` : ""}
         <button data-act="copy">Copy cmd</button>
         <button data-act="summarize" ${r.summarizing ? "disabled" : ""}>${s ? "Re-summarize" : "Summarize"}</button>
       </div>
@@ -345,7 +346,7 @@ function getPane(id) {
   el.innerHTML = `<div class="phead" draggable="true"><button class="star" data-act="star"></button><span class="ptitle"></span><span class="pwait"></span>
     <button data-act="split-bottom" title="New Claude below, same folder (Ctrl+Shift+O)">⊟</button>
     <button data-act="split-right" title="New Claude to the right, same folder (Ctrl+Shift+E)">◫</button>
-    <button data-act="max" title="Maximize / restore">⤢</button><button data-act="close" title="Remove from group (session keeps running)">✕</button></div>
+    <button data-act="max" title="Maximize / restore">⤢</button><button data-act="close" title="Remove from group (keeps running if it has a conversation, otherwise ends it)">✕</button></div>
     <div class="pbody"></div><div class="drop-overlay"></div>`;
   const p = {id, el, body: el.querySelector(".pbody"), mode: null};
   panes.set(id, p);
@@ -484,7 +485,11 @@ document.addEventListener("click", async e => {
     b.textContent = res.ok ? (act === "resume" ? "Starting…" : "Opened") : res.error;
     load();
   }
-  if (act === "close") { removeFrom(group(), id); save(); renderTabs(); renderLayout(); }
+  if (act === "close" || act === "discard") {
+    if (act === "close") removeFrom(group(), id); else state.groups.forEach(g => removeFrom(g, id));
+    save(); renderTabs(); renderLayout();
+    if (r?.fresh && r.tmux && !state.groups.some(g => inGroup(g, id))) { await post(`/api/discard/${id}`); load(); }
+  }
   if (act === "split-bottom" || act === "split-right") splitFrom(id, act.slice(6));
   if (act === "max") { const g = group(); g.max = g.max === id ? null : id; save(); renderLayout(); }
   if (act === "addgroup") {

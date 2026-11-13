@@ -181,7 +181,7 @@ def row(**kw):
         "title": "", "cwd": None, "resume_cwd": None, "resume_cwd_exists": False, "branch": None, "prs": [],
         "last_prompt": None, "first_ts": None, "last_ts": None, "live": False, "status": "closed", "pid": None,
         "name": None, "summary": None, "summary_stale": False, "summarizing": False, "tmux": None,
-        "shared": None, "peer": None, "resume_cmd": "", **kw,
+        "shared": None, "peer": None, "fresh": False, "resume_cmd": "", **kw,
     }
 
 
@@ -202,15 +202,19 @@ def session_rows():
     in_tmux = tmux_sessions()
     shared = gc_shared()
     rows = []
-    for sid, cwd in list(launched.items()):
-        if transcripts.get(sid) and transcripts[sid].n_messages or tmux_name(sid) not in in_tmux:
+    # sessions nobody has written to yet have no transcript; find them via the registry so they survive server restarts
+    used = {sid for sid, t in transcripts.items() if t.n_messages}
+    for sid in list(launched):
+        if sid in used or tmux_name(sid) not in in_tmux:
             launched.pop(sid)
-            continue
+    fresh = {sid: s["cwd"] for sid, s in live.items() if sid not in used and s.get("kind") == "interactive"}
+    for sid, cwd in {**fresh, **launched}.items():
         s = live.get(sid, {})
+        tmux = tmux_name(sid) if tmux_name(sid) in in_tmux else None
         rows.append(row(
-            id=sid, title="New session", cwd=cwd, resume_cwd=cwd, resume_cwd_exists=True, live=True,
-            status=s.get("status", "starting"), pid=s.get("pid"), tmux=tmux_name(sid), shared=shared.get(sid),
-            resume_cmd=f"tmux -L cc-dash attach -t {tmux_name(sid)}",
+            id=sid, title="New session", fresh=True, cwd=cwd, resume_cwd=cwd, resume_cwd_exists=True, live=True,
+            status=s.get("status", "starting"), pid=s.get("pid"), tmux=tmux, shared=shared.get(sid),
+            resume_cmd=f"tmux -L cc-dash attach -t {tmux}" if tmux else "",
         ))
     for s in peer_sessions():
         owner, _, title = s["name"].partition(":")
@@ -346,6 +350,17 @@ async def api_resume(request):
     return web.json_response({"ok": True})
 
 
+async def api_discard(request):
+    """End a dashboard session that was never written to, so nothing is lost."""
+    sid = request.match_info["id"]
+    refresh_index()
+    if transcripts.get(sid) and transcripts[sid].n_messages:
+        return web.json_response({"ok": False, "error": "session already has a conversation"}, status=409)
+    subprocess.run(TMUX + ["kill-session", "-t", tmux_name(sid)], capture_output=True)
+    launched.pop(sid, None)
+    return web.json_response({"ok": True})
+
+
 async def api_new(request):
     cwd = os.path.expanduser((await request.json())["cwd"])
     if not os.path.isdir(cwd):
@@ -461,6 +476,7 @@ def main():
         web.post("/api/summarize/{id}", api_summarize),
         web.post("/api/resume/{id}", api_resume),
         web.post("/api/new", api_new),
+        web.post("/api/discard/{id}", api_discard),
         web.get("/api/state", api_get_state),
         web.get("/api/gc", api_gc),
         web.post("/api/share/{id}", api_share),
