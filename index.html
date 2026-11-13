@@ -124,7 +124,7 @@ const RECENT_DAYS = 14;
 const $ = s => document.querySelector(s);
 let rows = [], byId = {}, state = {groups: [], stars: [], notes: {}};
 let cur = null, expanded = null, showOlder = false, drag = null;
-let gc = {installed: false, web: ""}, shareMsg = {};
+let gc = {installed: false, web: ""}, shareMsg = {}, focusId = null;
 const panes = new Map();
 
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
@@ -256,8 +256,15 @@ function renderTabs() {
 }
 
 /* ---------- layout ---------- */
+// flex-grow values summing below 1 only fill that fraction of the space, so keep each list's sizes summing to its length
+function normalize(list) {
+  const sum = list.reduce((a, x) => a + x.size, 0);
+  list.forEach(x => x.size = x.size * list.length / sum);
+}
+
 function renderLayout() {
   const L = $("#layout"), g = group();
+  if (g) { normalize(g.cols); g.cols.forEach(c => normalize(c.panes)); }
   for (const p of panes.values()) p.el.remove();
   L.innerHTML = "";
   L.classList.toggle("maxed", !!g?.max);
@@ -308,11 +315,13 @@ function removeFrom(g, id) {
 }
 function addTo(g, id) {
   if (inGroup(g, id)) return;
+  g.max = null;
   if (g.cols.length < 3) return g.cols.push({size: 1, panes: [{id, size: 1}]});
   g.cols.reduce((a, b) => a.panes.length <= b.panes.length ? a : b).panes.push({id, size: 1});
 }
 function placeAt(g, id, targetId, zone) {
   if (id === targetId) return;
+  g.max = null;
   removeFrom(g, id);
   const ci = g.cols.findIndex(c => c.panes.some(p => p.id === targetId));
   if (ci < 0) return addTo(g, id);
@@ -334,6 +343,8 @@ function getPane(id) {
   el.className = "pane";
   el.dataset.id = id;
   el.innerHTML = `<div class="phead" draggable="true"><button class="star" data-act="star"></button><span class="ptitle"></span><span class="pwait"></span>
+    <button data-act="split-bottom" title="New Claude below, same folder (Ctrl+Shift+O)">⊟</button>
+    <button data-act="split-right" title="New Claude to the right, same folder (Ctrl+Shift+E)">◫</button>
     <button data-act="max" title="Maximize / restore">⤢</button><button data-act="close" title="Remove from group (session keeps running)">✕</button></div>
     <div class="pbody"></div><div class="drop-overlay"></div>`;
   const p = {id, el, body: el.querySelector(".pbody"), mode: null};
@@ -389,13 +400,22 @@ function attachTerm(p, name) {
   const ws = new WebSocket(`ws://${location.host}/ws/term/${name}`);
   ws.binaryType = "arraybuffer";
   const send = o => ws.readyState === 1 && ws.send(JSON.stringify(o));
-  ws.onopen = () => { if (p.body.offsetWidth) fit.fit(); send({r: [term.cols, term.rows]}); };
+  ws.onopen = () => {
+    if (p.body.offsetWidth) fit.fit();
+    send({r: [term.cols, term.rows]});
+    if (focusId === p.id) { term.focus(); focusId = null; }
+  };
   ws.onmessage = e => term.write(new Uint8Array(e.data));
   ws.onclose = () => { if (p.term === term) p.mode = null; };
   term.onData(d => send({i: d}));
   term.onResize(({cols, rows}) => send({r: [cols, rows]}));
   term.attachCustomKeyEventHandler(e => {
     if (e.key === "Enter" && e.shiftKey) { if (e.type === "keydown") send({i: "\x1b\r"}); return false; }
+    if (e.ctrlKey && e.shiftKey && (e.code === "KeyO" || e.code === "KeyE")) {  // Terminator's split shortcuts
+      e.preventDefault();
+      if (e.type === "keydown") splitFrom(p.id, e.code === "KeyO" ? "bottom" : "right");
+      return false;
+    }
     return true;
   });
   const ro = new ResizeObserver(() => { if (p.body.offsetWidth) fit.fit(); });
@@ -465,6 +485,7 @@ document.addEventListener("click", async e => {
     load();
   }
   if (act === "close") { removeFrom(group(), id); save(); renderTabs(); renderLayout(); }
+  if (act === "split-bottom" || act === "split-right") splitFrom(id, act.slice(6));
   if (act === "max") { const g = group(); g.max = g.max === id ? null : id; save(); renderLayout(); }
   if (act === "addgroup") {
     const g = {id: uid(), name: `Group ${state.groups.length + 1}`, cols: []};
@@ -502,13 +523,19 @@ document.addEventListener("input", e => {
   save();
 });
 $("#q").addEventListener("input", renderSide);
-async function startNew(cwd) {
+async function startNew(cwd, nextTo = null, zone = "bottom") {
   const res = await post("/api/new", {cwd});
   if (!res.ok) return alert(res.error);
   $("#newform").classList.remove("open");
   $("#newcwd").value = "";
-  addTo(group(), res.id); save();
+  if (nextTo) placeAt(group(), res.id, nextTo, zone); else addTo(group(), res.id);
+  focusId = res.id;
+  save();
   await load(); renderTabs(); renderLayout();
+}
+function splitFrom(id, zone) {
+  const r = byId[id];
+  if (r?.cwd && !r.peer) startNew(r.cwd, id, zone);
 }
 $("#newform").addEventListener("submit", e => { e.preventDefault(); startNew($("#newcwd").value.trim()); });
 
