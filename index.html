@@ -95,6 +95,10 @@
   .info button { color: #ecebe6; border-color: #444; }
   .empty { margin: auto; color: var(--muted); text-align: center; border: 2px dashed var(--border); border-radius: 10px; padding: 40px 60px; }
   #layout.droptarget .empty { border-color: var(--accent); color: var(--accent); }
+  .pnote { position: absolute; top: 32px; right: 16px; width: 240px; z-index: 4; resize: horizontal; font-size: 12px;
+    background: color-mix(in srgb, var(--panel) 92%, transparent); border-color: var(--accent); box-shadow: 0 2px 8px #0005; }
+  .pnote[hidden] { display: none; }
+  .phead .pnotebtn.on { color: var(--accent); }
   .drop-overlay { display: none; position: absolute; inset: 0; z-index: 5; }
   body.dragging .drop-overlay { display: block; }
   .drop-overlay[data-zone]::after { content: ""; position: absolute; background: color-mix(in srgb, var(--accent) 35%, transparent); border: 2px solid var(--accent); }
@@ -345,14 +349,20 @@ function getPane(id) {
   el.className = "pane";
   el.dataset.id = id;
   el.innerHTML = `<div class="phead" draggable="true"><button class="star" data-act="star"></button><span class="ptitle"></span><span class="pwait"></span>
+    <button class="pnotebtn" data-act="note" title="Show / hide note">✎</button>
     <button data-act="split-bottom" title="New Claude below, same folder (Ctrl+Shift+O)">⊟</button>
     <button data-act="split-right" title="New Claude to the right, same folder (Ctrl+Shift+E)">◫</button>
     <button data-act="max" title="Maximize / restore">⤢</button><button data-act="close" title="Close: ends the session if idle (resume any time), keeps it running if it is working">✕</button></div>
-    <div class="pbody"></div><div class="drop-overlay"></div>`;
+    <div class="pbody"></div><textarea class="pnote" data-note="${esc(id)}" placeholder="Note…" hidden></textarea><div class="drop-overlay"></div>`;
   const p = {id, el, body: el.querySelector(".pbody"), mode: null};
   panes.set(id, p);
   updatePane(p);
   return p;
+}
+
+function fitNote(nb) {
+  nb.style.height = "auto";
+  nb.style.height = Math.min(nb.scrollHeight + 2, 160) + "px";
 }
 
 function paneMode(r, id) {
@@ -371,6 +381,11 @@ function updatePane(p) {
   const st = head.querySelector(".star");
   st.textContent = starred(p.id) ? "★" : "☆";
   st.classList.toggle("on", starred(p.id));
+  const nb = p.el.querySelector(".pnote"), note = state.notes[p.id] || "";
+  if (document.activeElement !== nb) nb.value = note;
+  nb.hidden = p.noteHidden ?? !note;
+  head.querySelector(".pnotebtn").classList.toggle("on", !!note);
+  fitNote(nb);
   const mode = paneMode(r, p.id);
   if (mode === p.mode) return;
   teardown(p);
@@ -471,6 +486,12 @@ document.addEventListener("click", async e => {
   }
   if (act === "older") { showOlder = true; renderSide(); }
   if (act === "settings") $("#settings").hidden = !$("#settings").hidden;
+  if (act === "note") {
+    const p = panes.get(id), nb = p.el.querySelector(".pnote");
+    p.noteHidden = !nb.hidden;
+    updatePane(p);
+    if (!nb.hidden) nb.focus();
+  }
   if (act === "favnew") startNew(b.dataset.dir);
   if (act === "favdel") { state.favdirs = state.favdirs.filter(d => d !== b.dataset.dir); save(); renderFavs(); }
   if (act === "favadd") {
@@ -534,6 +555,7 @@ document.addEventListener("input", e => {
   const id = e.target.dataset.note;
   if (id === undefined) return;
   if (e.target.value.trim()) state.notes[id] = e.target.value; else delete state.notes[id];
+  if (e.target.classList.contains("pnote")) fitNote(e.target);
   save();
 });
 $("#q").addEventListener("input", renderSide);
