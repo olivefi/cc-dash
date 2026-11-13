@@ -28,7 +28,10 @@ STATE_FILE = CACHE_DIR / "state.json"
 HERE = Path(__file__).parent
 TMUX = ["tmux", "-L", "cc-dash", "-f", str(HERE / "tmux.conf")]
 SHELL = os.environ.get("SHELL", "/bin/zsh")
+GC_DIR = Path.home() / ".gc"
+GC_BIN = GC_DIR / "bin" / "gc"
 PORT = int(os.environ.get("CC_DASH_PORT", 8787))
+ALLOWED_HOSTS = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
 AUTO_SUMMARY_DAYS = 7
 MAX_PARALLEL_SUMMARIES = 3
 BUSY_RESUMMARIZE_SECS = 300
@@ -153,6 +156,35 @@ def live_sessions():
     return live
 
 
+def peer_sessions():
+    """Coworkers' shared sessions, which the intern-groupchat bridge registers as gc:// entries."""
+    peers = []
+    for f in (CLAUDE_DIR / "sessions").glob("*.json"):
+        try:
+            s = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if s.get("cwd", "").startswith("gc://"):
+            peers.append(s)
+    return peers
+
+
+def gc_shared():
+    try:
+        return json.loads((GC_DIR / "shared.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def row(**kw):
+    return {
+        "title": "", "cwd": None, "resume_cwd": None, "resume_cwd_exists": False, "branch": None, "prs": [],
+        "last_prompt": None, "first_ts": None, "last_ts": None, "live": False, "status": "closed", "pid": None,
+        "name": None, "summary": None, "summary_stale": False, "summarizing": False, "tmux": None,
+        "shared": None, "peer": None, "resume_cmd": "", **kw,
+    }
+
+
 def refresh_index():
     for path in (CLAUDE_DIR / "projects").glob("*/*.jsonl"):
         t = transcripts.get(path.stem) or transcripts.setdefault(path.stem, Transcript(path))
@@ -168,19 +200,21 @@ def session_rows():
     refresh_index()
     live = live_sessions()
     in_tmux = tmux_sessions()
+    shared = gc_shared()
     rows = []
     for sid, cwd in list(launched.items()):
         if transcripts.get(sid) and transcripts[sid].n_messages or tmux_name(sid) not in in_tmux:
             launched.pop(sid)
             continue
-        rows.append({
-            "id": sid, "title": "New session", "cwd": cwd, "resume_cwd": cwd, "resume_cwd_exists": True,
-            "branch": None, "prs": [], "last_prompt": None, "first_ts": None, "last_ts": None,
-            "live": True, "status": live.get(sid, {}).get("status", "starting"), "pid": None, "name": None,
-            "summary": None, "summary_stale": False, "summarizing": False, "tmux": tmux_name(sid),
-            "starred": sid in state["stars"], "note": state["notes"].get(sid, ""),
-            "resume_cmd": f"tmux -L cc-dash attach -t {tmux_name(sid)}",
-        })
+        s = live.get(sid, {})
+        rows.append(row(
+            id=sid, title="New session", cwd=cwd, resume_cwd=cwd, resume_cwd_exists=True, live=True,
+            status=s.get("status", "starting"), pid=s.get("pid"), tmux=tmux_name(sid), shared=shared.get(sid),
+            resume_cmd=f"tmux -L cc-dash attach -t {tmux_name(sid)}",
+        ))
+    for s in peer_sessions():
+        owner, _, title = s["name"].partition(":")
+        rows.append(row(id=f"peer:{s['name']}", peer=s["name"], title=title, cwd=owner, live=True, status=s.get("status", "idle")))
     for t in transcripts.values():
         if not t.n_messages:
             continue
@@ -205,8 +239,8 @@ def session_rows():
             "summary_stale": summaries.get(t.id, {}).get("key") != t.last_ts,
             "summarizing": t.id in summarizing,
             "tmux": tmux,
-            "starred": t.id in state["stars"],
-            "note": state["notes"].get(t.id, ""),
+            "shared": shared.get(t.id),
+            "peer": None,
             "resume_cmd": f"tmux -L cc-dash attach -t {tmux}" if tmux
             else f"cd {shlex.quote(t.first_cwd or '~')} && claude --resume {t.id}",
         })
@@ -322,6 +356,40 @@ async def api_new(request):
     return web.json_response({"ok": True, "id": sid})
 
 
+async def api_share(request):
+    """Share or unshare a running session through intern-groupchat's `gc` CLI."""
+    s = live_sessions().get(request.match_info["id"])
+    if not s:
+        return web.json_response({"ok": False, "output": "only running sessions can be shared"}, status=400)
+    body = await request.json()
+    if body.get("unshare"):
+        args = ["unshare", "--pid", str(s["pid"])]
+    else:
+        args = ["share", "--pid", str(s["pid"]), *(["--with-history"] if body.get("history") else []), *body["with"].split()]
+    proc = await asyncio.create_subprocess_exec(str(GC_BIN), *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    out, _ = await proc.communicate()
+    return web.json_response({"ok": proc.returncode == 0, "output": out.decode().strip()})
+
+
+async def api_gc(request):
+    try:
+        port = json.loads((GC_DIR / "config.json").read_text()).get("web_port", 7779)
+    except (OSError, json.JSONDecodeError):
+        port = 7779
+    return web.json_response({"installed": GC_BIN.exists(), "web": f"http://127.0.0.1:{port}"})
+
+
+@web.middleware
+async def guard(request, handler):
+    """The API can start shells, so only this machine's own page may use it: blocks DNS rebinding and cross-site requests."""
+    origin = request.headers.get("Origin")
+    if request.host not in ALLOWED_HOSTS or (origin and origin.split("://", 1)[-1] not in ALLOWED_HOSTS):
+        raise web.HTTPForbidden()
+    if request.method != "GET" and request.headers.get("X-CC-Dash") != "1":
+        raise web.HTTPForbidden()
+    return await handler(request)
+
+
 async def api_get_state(request):
     return web.json_response(state)
 
@@ -386,7 +454,7 @@ async def on_startup(app):
 
 
 def main():
-    app = web.Application()
+    app = web.Application(middlewares=[guard])
     app.add_routes([
         web.get("/", index),
         web.get("/api/sessions", api_sessions),
@@ -394,6 +462,8 @@ def main():
         web.post("/api/resume/{id}", api_resume),
         web.post("/api/new", api_new),
         web.get("/api/state", api_get_state),
+        web.get("/api/gc", api_gc),
+        web.post("/api/share/{id}", api_share),
         web.put("/api/state", api_put_state),
         web.get("/ws/term/{name}", ws_term),
     ])

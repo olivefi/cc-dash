@@ -11,7 +11,7 @@
 <style>
   :root {
     --bg: #f4f4f1; --panel: #fff; --fg: #1d1d1b; --muted: #6b6b66; --border: #dcdcd6; --hover: #ebebe6;
-    --busy: #2f7de1; --wait: #d9822b; --idle: #3aa36b; --closed: #a3a39e; --accent: #c4643a; --star: #e0a800;
+    --busy: #2f7de1; --wait: #d9822b; --idle: #3aa36b; --closed: #a3a39e; --accent: #c4643a; --star: #e0a800; --peer: #8a63d2;
     --term-bg: #1a1a19;
   }
   @media (prefers-color-scheme: dark) {
@@ -44,6 +44,14 @@
   .item { padding: 7px 10px 7px 8px; border-left: 3px solid var(--closed); cursor: pointer; border-bottom: 1px solid var(--border); }
   .item:hover { background: var(--hover); }
   .item.open-detail { background: var(--hover); }
+  .k-peer { border-left-color: var(--peer); }
+  .shr { color: var(--peer); font-size: 12px; }
+  .share { display: flex; flex-direction: column; gap: 4px; }
+  .share input[data-share-with] { flex: 1; min-width: 140px; width: auto; }
+  .share label { display: flex; align-items: center; gap: 3px; font-size: 12px; color: var(--muted); }
+  .share label input { width: auto; }
+  .shareout { font-size: 11px; color: var(--muted); white-space: pre-wrap; }
+  .pbody iframe { width: 100%; height: 100%; border: 0; background: #fff; }
   .k-busy { border-left-color: var(--busy); } .k-idle { border-left-color: var(--idle); } .k-wait { border-left-color: var(--wait); }
   .row1 { display: flex; gap: 6px; align-items: baseline; }
   .title { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -116,12 +124,14 @@ const RECENT_DAYS = 14;
 const $ = s => document.querySelector(s);
 let rows = [], byId = {}, state = {groups: [], stars: [], notes: {}};
 let cur = null, expanded = null, showOlder = false, drag = null;
+let gc = {installed: false, web: ""}, shareMsg = {};
 const panes = new Map();
 
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
 const home = p => (p || "").replace(/^\/home\/[^/]+/, "~");
 const uid = () => Math.random().toString(36).slice(2, 10);
-const post = (url, body = {}) => fetch(url, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)}).then(r => r.json());
+const HDR = {"content-type": "application/json", "X-CC-Dash": "1"};
+const post = (url, body = {}) => fetch(url, {method: "POST", headers: HDR, body: JSON.stringify(body)}).then(r => r.json());
 
 function ago(ts) {
   if (!ts) return "";
@@ -132,6 +142,7 @@ function ago(ts) {
   return `${Math.floor(s / 86400)}d`;
 }
 function kind(r) {
+  if (r?.peer) return "peer";
   if (!r || !r.live) return "closed";
   if (r.status === "busy") return "busy";
   return r.summary?.waiting_on_user ? "wait" : "idle";
@@ -142,17 +153,46 @@ const starred = id => state.stars.includes(id);
 let saveTimer;
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => fetch("/api/state", {method: "PUT", headers: {"content-type": "application/json"}, body: JSON.stringify(state)}), 300);
+  saveTimer = setTimeout(() => fetch("/api/state", {method: "PUT", headers: HDR, body: JSON.stringify(state)}), 300);
 }
 const group = (gid = cur) => state.groups.find(g => g.id === gid);
 function setCur(gid) {
+  if (gid === cur) return;
   cur = gid;
   try { localStorage.setItem("cc-dash-group", gid); } catch {}
   renderTabs(); renderLayout();
 }
 
 /* ---------- sidebar ---------- */
+const chatUrl = peer => `${gc.web}/#${encodeURIComponent(peer)}`;
+
+function peerItem(r) {
+  const open = expanded === r.id, note = state.notes[r.id];
+  return `<div class="item k-peer ${open ? "open-detail" : ""}" draggable="true" data-id="${esc(r.id)}">
+    <div class="row1"><button class="star ${starred(r.id) ? "on" : ""}" data-act="star">${starred(r.id) ? "★" : "☆"}</button>
+      <span class="title">${esc(r.title)}</span><span class="ago">${esc(r.status)}</span></div>
+    <div class="sub">${esc(r.cwd)}'s session</div>
+    ${note && !open ? `<div class="notepv">✎ ${esc(note.split("\n")[0])}</div>` : ""}
+    ${open ? `<div class="detail"><textarea data-note="${esc(r.id)}" placeholder="Notes…">${esc(note || "")}</textarea>
+      <div class="actions"><button data-act="addcur">Add chat to “${esc(group()?.name || "")}”</button>
+        <a href="${chatUrl(r.peer)}" target="_blank"><button>Open chat in browser</button></a></div></div>` : ""}
+  </div>`;
+}
+
+function shareBox(r) {
+  if (!gc.installed || !(r.live || r.shared)) return "";
+  const sh = r.shared;
+  return `<div class="share">
+    ${sh ? `<div><b>shared with</b> ${esc(sh.acl.join(", "))}${sh.history ? " (with history)" : ""}</div>` : ""}
+    ${r.live ? `<div class="actions"><input data-share-with placeholder="share with: jorgen bob, or *" value="${esc(sh?.acl.join(" ") || "")}">
+      <label><input type="checkbox" data-share-hist ${sh?.history ? "checked" : ""}>history</label>
+      <button data-act="share">${sh ? "Update" : "Share"}</button>${sh ? `<button data-act="unshare">Unshare</button>` : ""}</div>` : ""}
+    ${shareMsg[r.id] ? `<div class="shareout">${esc(shareMsg[r.id])}</div>` : ""}
+  </div>`;
+}
+
 function item(r) {
+  if (r.peer) return peerItem(r);
   const k = kind(r), s = r.summary, open = expanded === r.id;
   const line = k === "wait" && s?.waiting_reason ? `<div class="line wait">→ ${esc(s.waiting_reason)}</div>`
     : s ? `<div class="line">${esc(s.state)}</div>` : r.last_prompt ? `<div class="line">${esc(r.last_prompt)}</div>` : "";
@@ -163,6 +203,7 @@ function item(r) {
       <div class="meta"><b>id</b> ${r.id}${r.branch && r.branch !== "HEAD" ? ` · <b>branch</b> ${esc(r.branch)}` : ""}
         ${r.prs.map(p => ` · <a href="${esc(p.url)}" target="_blank">PR #${p.number}</a>`).join("")}</div>
       <textarea data-note="${r.id}" placeholder="Notes…">${esc(note || "")}</textarea>
+      ${shareBox(r)}
       <div class="actions">
         <button data-act="addcur">Add to “${esc(group()?.name || "")}”</button>
         ${r.live && !r.tmux ? "" : `<button data-act="terminator" ${r.tmux || r.resume_cwd_exists ? "" : "disabled"}>${where}</button>`}
@@ -172,7 +213,7 @@ function item(r) {
     </div>` : "";
   return `<div class="item k-${k} ${open ? "open-detail" : ""}" draggable="true" data-id="${r.id}">
     <div class="row1"><button class="star ${starred(r.id) ? "on" : ""}" data-act="star">${starred(r.id) ? "★" : "☆"}</button>
-      <span class="title">${esc(r.title)}</span><span class="ago">${r.live ? (r.tmux ? "● " : "◌ ") : ""}${ago(r.last_ts)}</span></div>
+      <span class="title">${esc(r.title)}</span>${r.shared ? `<span class="shr" title="shared with ${esc(r.shared.acl.join(", "))}">⇄</span>` : ""}<span class="ago">${r.live ? (r.tmux ? "● " : "◌ ") : ""}${ago(r.last_ts)}</span></div>
     <div class="sub">${esc(home(r.cwd))}${r.branch && r.branch !== "HEAD" ? ` · ${esc(r.branch)}` : ""}</div>
     ${line}${note && !open ? `<div class="notepv">✎ ${esc(note.split("\n")[0])}</div>` : ""}
     ${detail}
@@ -181,23 +222,24 @@ function item(r) {
 
 function renderSide() {
   const q = $("#q").value.toLowerCase().trim();
-  const match = r => !q || [r.title, r.cwd, r.branch, r.last_prompt, r.id, state.notes[r.id], JSON.stringify(r.summary || "")]
+  const match = r => !q || [r.title, r.cwd, r.branch, r.last_prompt, r.id, r.peer, state.notes[r.id], JSON.stringify(r.summary || ""), JSON.stringify(r.shared || "")]
     .join(" ").toLowerCase().includes(q);
   const list = rows.filter(match);
   const cutoff = Date.now() - RECENT_DAYS * 86400e3;
-  const order = {wait: 0, busy: 1, idle: 2, closed: 3};
+  const order = {wait: 0, busy: 1, idle: 2, closed: 3, peer: 3};
   const stars = list.filter(r => starred(r.id)).sort((a, b) => order[kind(a)] - order[kind(b)]);
   const rest = list.filter(r => !starred(r.id));
-  const live = rest.filter(r => r.live).sort((a, b) => order[kind(a)] - order[kind(b)]);
+  const peers = rest.filter(r => r.peer);
+  const live = rest.filter(r => r.live && !r.peer).sort((a, b) => order[kind(a)] - order[kind(b)]);
   const closed = rest.filter(r => !r.live);
   const recent = closed.filter(r => r.last_ts && new Date(r.last_ts) > cutoff);
   const older = closed.filter(r => !(r.last_ts && new Date(r.last_ts) > cutoff));
   const sec = (t, l) => l.length ? `<h2>${t} (${l.length})</h2>${l.map(item).join("")}` : "";
-  $("#list").innerHTML = sec("★ Starred", stars) + sec("Open", live) + sec(`Closed, last ${RECENT_DAYS} days`, recent) +
+  $("#list").innerHTML = sec("★ Starred", stars) + sec("Open", live) + sec("Peers", peers) + sec(`Closed, last ${RECENT_DAYS} days`, recent) +
     (older.length ? (showOlder || q ? sec("Older", older) : `<h2>Older (${older.length})</h2><div style="padding:4px 12px"><button data-act="older">Show older</button></div>`) : "");
 
   const nWait = rows.filter(r => kind(r) === "wait").length;
-  $("#counts").textContent = `${nWait} need you · ${rows.filter(r => kind(r) === "busy").length} working · ${rows.filter(r => r.live).length} open`;
+  $("#counts").textContent = `${nWait} need you · ${rows.filter(r => kind(r) === "busy").length} working · ${rows.filter(r => r.live && !r.peer).length} open`;
   document.title = nWait ? `(${nWait}) Claude Sessions` : "Claude Sessions";
   $("#cwds").innerHTML = [...new Set(rows.map(r => home(r.resume_cwd)).filter(Boolean))].map(c => `<option value="${esc(c)}">`).join("");
 }
@@ -300,7 +342,8 @@ function getPane(id) {
   return p;
 }
 
-function paneMode(r) {
+function paneMode(r, id) {
+  if (id.startsWith("peer:")) return "chat";
   if (!r) return "missing";
   if (r.tmux) return "term:" + r.tmux;
   return r.live ? "external" : "closed";
@@ -315,11 +358,12 @@ function updatePane(p) {
   const st = head.querySelector(".star");
   st.textContent = starred(p.id) ? "★" : "☆";
   st.classList.toggle("on", starred(p.id));
-  const mode = paneMode(r);
+  const mode = paneMode(r, p.id);
   if (mode === p.mode) return;
   teardown(p);
   p.mode = mode;
   if (mode.startsWith("term:")) return attachTerm(p, r.tmux);
+  if (mode === "chat") return p.body.innerHTML = `<iframe src="${chatUrl(p.id.slice(5))}"></iframe>`;
   const s = r?.summary;
   p.body.innerHTML = `<div class="info">
     ${s ? `<div><b>goal</b> ${esc(s.goal)}</div><div><b>state</b> ${esc(s.state)}</div>` : ""}
@@ -374,7 +418,7 @@ async function load() {
   byId = Object.fromEntries(rows.map(r => [r.id, r]));
   const typing = document.activeElement?.closest?.("#side") && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
   if (!typing && !drag) renderSide();
-  if (!drag) renderTabs();
+  if (!drag && !$("#tabs [contenteditable=true]")) renderTabs();
   for (const p of panes.values()) updatePane(p);
 }
 
@@ -387,13 +431,21 @@ document.addEventListener("click", async e => {
     const it = e.target.closest(".item");
     if (it && !e.target.closest(".detail")) { expanded = expanded === id ? null : id; renderSide(); }
     const tab = e.target.closest(".tab");
-    if (tab && !tab.querySelector("[contenteditable]")) setCur(tab.dataset.gid);
+    if (tab && !tab.querySelector("[contenteditable=true]")) setCur(tab.dataset.gid);
     return;
   }
   const act = b.dataset.act;
   if (act === "star") {
     state.stars = starred(id) ? state.stars.filter(x => x !== id) : [...state.stars, id];
     save(); renderSide(); panes.has(id) && updatePane(panes.get(id));
+  }
+  if (act === "share" || act === "unshare") {
+    const it = b.closest(".item");
+    b.disabled = true;
+    const res = await post(`/api/share/${id}`, act === "unshare" ? {unshare: true}
+      : {with: it.querySelector("[data-share-with]").value, history: it.querySelector("[data-share-hist]").checked});
+    shareMsg[id] = res.output;
+    await load(); renderSide();
   }
   if (act === "older") { showOlder = true; renderSide(); }
   if (act === "favnew") startNew(b.dataset.dir);
@@ -424,7 +476,7 @@ document.addEventListener("click", async e => {
     const gid = b.closest(".tab").dataset.gid;
     state.groups = state.groups.filter(g => g.id !== gid);
     if (!state.groups.length) state.groups.push({id: uid(), name: "Main", cols: []});
-    save(); setCur(gid === cur ? state.groups[0].id : cur);
+    save(); if (gid === cur) setCur(state.groups[0].id); else renderTabs();
   }
 });
 
@@ -519,6 +571,7 @@ document.addEventListener("drop", e => {
 /* ---------- boot ---------- */
 (async () => {
   state = await (await fetch("/api/state")).json();
+  gc = await (await fetch("/api/gc")).json();
   if (!state.groups.length) state.groups.push({id: uid(), name: "Main", cols: []});
   state.favdirs ??= ["~", "~/ssd2/lunarleaper-isaaclab", "~/robot-workspaces/lunarleaper-ws/src/lunarleaper-rsl"];
   renderFavs();
