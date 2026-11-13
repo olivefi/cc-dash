@@ -27,6 +27,7 @@ SUMMARY_FILE = CACHE_DIR / "summaries.json"
 STATE_FILE = CACHE_DIR / "state.json"
 SUMMARY_WORKDIR = CACHE_DIR / "work"
 JOBS_DIR = CACHE_DIR / "jobs"
+OPEN_FILE = CACHE_DIR / "open.json"
 HERE = Path(__file__).parent
 TMUX = ["tmux", "-L", "cc-dash", "-f", str(HERE / "tmux.conf")]
 SHELL = os.environ.get("SHELL", "/bin/zsh")
@@ -495,8 +496,31 @@ async def index(request):
     return web.FileResponse(HERE / "index.html")
 
 
+def reopen_sessions():
+    """After a reboot, resume the sessions that were open in tmux before it."""
+    refresh_index()
+    hosted, live = tmux_sessions(), live_sessions()
+    for sid in json.loads(OPEN_FILE.read_text()) if OPEN_FILE.exists() else []:
+        t = transcripts.get(sid)
+        if tmux_name(sid) in hosted or sid in live or not t or not t.first_cwd or not os.path.isdir(t.first_cwd):
+            continue
+        print(f"reopening {sid}")
+        tmux_start(sid, t.first_cwd, f"--resume {sid}")
+
+
+async def record_open_loop():
+    while True:
+        out = subprocess.run(TMUX + ["list-sessions", "-F", "#{session_name}"], capture_output=True, text=True)
+        if out.returncode == 0:  # no tmux server: shutting down, keep the last record
+            names = set(out.stdout.split())
+            OPEN_FILE.write_text(json.dumps([sid for sid in {*transcripts, *launched} if tmux_name(sid) in names]))
+        await asyncio.sleep(10)
+
+
 async def on_startup(app):
+    reopen_sessions()
     app["summary_task"] = asyncio.create_task(summary_loop())
+    app["record_task"] = asyncio.create_task(record_open_loop())
 
 
 def main():

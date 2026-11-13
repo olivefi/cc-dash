@@ -9,7 +9,7 @@ which ones need you, and all of them in Terminator-style split views in one wind
   sessions; leave notes on them; resume any closed session with one click.
 - **Work in it:** sessions run inside the dashboard as real terminals, arranged by drag and
   drop into groups of split panes. They live in tmux, so closing the window or restarting
-  the server never interrupts them.
+  the server never interrupts them, and the ones open at shutdown are resumed after a reboot.
 - **Job tags:** sessions mark the GPU runs and cluster jobs they started (`cc-job`), so the
   sessions that still need resolving are listed at the top, and flagged once a job is due.
 - **Optional [intern-groupchat](https://github.com/olivefi/intern-groupchat) integration:**
