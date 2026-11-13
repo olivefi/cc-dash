@@ -1,0 +1,20 @@
+[Unit]
+Description=cc-dash: Claude Code session dashboard (localhost:8787)
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/cc-dash/server.py
+WorkingDirectory=%h/cc-dash
+# uv and claude usually live in ~/.local/bin; ~/.gc/bin is only needed for intern-groupchat
+Environment=PATH=%h/.local/bin:%h/.gc/bin:/usr/local/bin:/usr/bin:/bin
+# the shell sessions are started with; set to your login shell (getent passwd $USER | cut -d: -f7)
+Environment=SHELL=/usr/bin/zsh
+Environment=PYTHONUNBUFFERED=1
+# only stop the server itself: the tmux server holding the Claude sessions must survive restarts
+KillMode=process
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=graphical-session.target

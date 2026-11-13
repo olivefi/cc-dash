@@ -114,7 +114,7 @@
     <div class="r"><h1>Claude Sessions</h1><span id="counts"></span><button class="star" data-act="settings" title="Settings">⚙</button></div>
     <div id="settings" hidden><label><input type="checkbox" id="autosum" style="width:auto"> Summarize active sessions automatically (Haiku)</label></div>
     <div class="r"><input id="q" placeholder="Search titles, notes, summaries, paths…" autocomplete="off"><button data-act="newtoggle" title="New session">+ New</button></div>
-    <form id="newform" class="r"><input id="newcwd" list="cwds" placeholder="Directory, e.g. ~/ssd2/lunarleaper-isaaclab" autocomplete="off"><button>Start</button><button type="button" data-act="favadd" title="Save as favorite directory">☆</button></form>
+    <form id="newform" class="r"><input id="newcwd" list="cwds" placeholder="Directory, e.g. ~/code/my-project" autocomplete="off"><button>Start</button><button type="button" data-act="favadd" title="Save as favorite directory">☆</button></form>
     <div id="favs"></div>
     <datalist id="cwds"></datalist>
   </header>
@@ -189,7 +189,7 @@ function shareBox(r) {
   const sh = r.shared;
   return `<div class="share">
     ${sh ? `<div><b>shared with</b> ${esc(sh.acl.join(", "))}${sh.history ? " (with history)" : ""}</div>` : ""}
-    ${r.live ? `<div class="actions"><input data-share-with placeholder="share with: jorgen bob, or *" value="${esc(sh?.acl.join(" ") || "")}">
+    ${r.live ? `<div class="actions"><input data-share-with placeholder="share with: alice bob, or *" value="${esc(sh?.acl.join(" ") || "")}">
       <label><input type="checkbox" data-share-hist ${sh?.history ? "checked" : ""}>history</label>
       <button data-act="share">${sh ? "Update" : "Share"}</button>${sh ? `<button data-act="unshare">Unshare</button>` : ""}</div>` : ""}
     ${shareMsg[r.id] ? `<div class="shareout">${esc(shareMsg[r.id])}</div>` : ""}
@@ -636,7 +636,7 @@ document.addEventListener("drop", e => {
   state = await (await fetch("/api/state")).json();
   gc = await (await fetch("/api/gc")).json();
   if (!state.groups.length) state.groups.push({id: uid(), name: "Main", cols: []});
-  state.favdirs ??= ["~", "~/ssd2/lunarleaper-isaaclab", "~/robot-workspaces/lunarleaper-ws/src/lunarleaper-rsl"];
+  state.favdirs ??= ["~"];
   renderFavs();
   state.settings ??= {auto_summaries: true};
   $("#autosum").checked = state.settings.auto_summaries;
