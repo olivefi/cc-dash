@@ -353,12 +353,9 @@ async def api_resume(request):
     return web.json_response({"ok": True})
 
 
-async def api_discard(request):
-    """End a dashboard session that was never written to, so nothing is lost."""
+async def api_end(request):
+    """End a dashboard session. Its conversation is already on disk, so it can be resumed later."""
     sid = request.match_info["id"]
-    refresh_index()
-    if transcripts.get(sid) and transcripts[sid].n_messages:
-        return web.json_response({"ok": False, "error": "session already has a conversation"}, status=409)
     subprocess.run(TMUX + ["kill-session", "-t", tmux_name(sid)], capture_output=True)
     launched.pop(sid, None)
     return web.json_response({"ok": True})
@@ -479,7 +476,7 @@ def main():
         web.post("/api/summarize/{id}", api_summarize),
         web.post("/api/resume/{id}", api_resume),
         web.post("/api/new", api_new),
-        web.post("/api/discard/{id}", api_discard),
+        web.post("/api/end/{id}", api_end),
         web.get("/api/state", api_get_state),
         web.get("/api/gc", api_gc),
         web.post("/api/share/{id}", api_share),
