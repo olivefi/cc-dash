@@ -107,7 +107,8 @@
 <body>
 <aside id="side">
   <header>
-    <div class="r"><h1>Claude Sessions</h1><span id="counts"></span></div>
+    <div class="r"><h1>Claude Sessions</h1><span id="counts"></span><button class="star" data-act="settings" title="Settings">⚙</button></div>
+    <div id="settings" hidden><label><input type="checkbox" id="autosum" style="width:auto"> Summarize active sessions automatically (Haiku)</label></div>
     <div class="r"><input id="q" placeholder="Search titles, notes, summaries, paths…" autocomplete="off"><button data-act="newtoggle" title="New session">+ New</button></div>
     <form id="newform" class="r"><input id="newcwd" list="cwds" placeholder="Directory, e.g. ~/ssd2/lunarleaper-isaaclab" autocomplete="off"><button>Start</button><button type="button" data-act="favadd" title="Save as favorite directory">☆</button></form>
     <div id="favs"></div>
@@ -469,6 +470,7 @@ document.addEventListener("click", async e => {
     await load(); renderSide();
   }
   if (act === "older") { showOlder = true; renderSide(); }
+  if (act === "settings") $("#settings").hidden = !$("#settings").hidden;
   if (act === "favnew") startNew(b.dataset.dir);
   if (act === "favdel") { state.favdirs = state.favdirs.filter(d => d !== b.dataset.dir); save(); renderFavs(); }
   if (act === "favadd") {
@@ -607,6 +609,9 @@ document.addEventListener("drop", e => {
   if (!state.groups.length) state.groups.push({id: uid(), name: "Main", cols: []});
   state.favdirs ??= ["~", "~/ssd2/lunarleaper-isaaclab", "~/robot-workspaces/lunarleaper-ws/src/lunarleaper-rsl"];
   renderFavs();
+  state.settings ??= {auto_summaries: true};
+  $("#autosum").checked = state.settings.auto_summaries;
+  $("#autosum").onchange = e => { state.settings.auto_summaries = e.target.checked; save(); };
   let saved = null;
   try { saved = localStorage.getItem("cc-dash-group"); } catch {}
   cur = group(saved) ? saved : state.groups[0].id;

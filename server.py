@@ -25,6 +25,7 @@ CLAUDE_DIR = Path.home() / ".claude"
 CACHE_DIR = Path.home() / ".cache" / "cc-dash"
 SUMMARY_FILE = CACHE_DIR / "summaries.json"
 STATE_FILE = CACHE_DIR / "state.json"
+SUMMARY_WORKDIR = CACHE_DIR / "work"
 HERE = Path(__file__).parent
 TMUX = ["tmux", "-L", "cc-dash", "-f", str(HERE / "tmux.conf")]
 SHELL = os.environ.get("SHELL", "/bin/zsh")
@@ -150,7 +151,7 @@ def live_sessions():
             s = json.loads(f.read_text())
         except (json.JSONDecodeError, OSError):
             continue
-        if s.get("cwd", "").startswith("gc://") or not pid_alive(s["pid"]):
+        if s.get("cwd", "").startswith("gc://") or s.get("cwd") == str(SUMMARY_WORKDIR) or not pid_alive(s["pid"]):
             continue
         live[s["sessionId"]] = s
     return live
@@ -272,13 +273,12 @@ async def summarize(t: Transcript):
     key = t.last_ts
     convo = "\n\n".join(f"{role.upper()}: {text}" for role, text in list(t.messages)[-30:])
     prompt = SUMMARY_PROMPT.format(cwd=t.cwd, branch=t.branch, convo=convo[-40000:])
-    workdir = CACHE_DIR / "work"
-    workdir.mkdir(parents=True, exist_ok=True)
+    SUMMARY_WORKDIR.mkdir(parents=True, exist_ok=True)
     try:
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", "--model", "haiku", "--tools", "", "--no-session-persistence",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            cwd=workdir,
+            cwd=SUMMARY_WORKDIR,
         )
         out, _ = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout=120)
         match = re.search(r"\{.*\}", out.decode(), re.S)
@@ -298,6 +298,9 @@ async def summary_loop():
             await summarize(t)
 
     while True:
+        if not state.get("settings", {}).get("auto_summaries", True):
+            await asyncio.sleep(10)
+            continue
         try:
             rows = session_rows()
             cutoff = time.time() - AUTO_SUMMARY_DAYS * 86400
