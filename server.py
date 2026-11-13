@@ -485,7 +485,7 @@ def main():
     ])
     app.on_startup.append(on_startup)
     print(f"cc-dash on http://localhost:{PORT}")
-    web.run_app(app, host="127.0.0.1", port=PORT, print=None)
+    web.run_app(app, host="127.0.0.1", port=PORT, print=None, shutdown_timeout=2)  # open terminals would otherwise stall stops for 60s
 
 
 if __name__ == "__main__":
