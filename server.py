@@ -4,12 +4,17 @@
 # dependencies = ["aiohttp>=3.9"]
 # ///
 import asyncio
+import fcntl
 import json
 import os
 import re
 import shlex
+import signal
+import struct
 import subprocess
+import termios
 import time
+import uuid
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +24,10 @@ from aiohttp import web
 CLAUDE_DIR = Path.home() / ".claude"
 CACHE_DIR = Path.home() / ".cache" / "cc-dash"
 SUMMARY_FILE = CACHE_DIR / "summaries.json"
+STATE_FILE = CACHE_DIR / "state.json"
 HERE = Path(__file__).parent
+TMUX = ["tmux", "-L", "cc-dash", "-f", str(HERE / "tmux.conf")]
+SHELL = os.environ.get("SHELL", "/bin/zsh")
 PORT = int(os.environ.get("CC_DASH_PORT", 8787))
 AUTO_SUMMARY_DAYS = 7
 MAX_PARALLEL_SUMMARIES = 3
@@ -104,6 +112,24 @@ def _message_text(role, e):
 transcripts: dict[str, Transcript] = {}
 summaries: dict = json.loads(SUMMARY_FILE.read_text()) if SUMMARY_FILE.exists() else {}
 summarizing: set[str] = set()
+state: dict = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {"groups": [], "stars": [], "notes": {}}
+launched: dict[str, str] = {}  # new session id -> cwd, until its transcript has messages
+
+
+def tmux_name(sid):
+    return f"cc-{sid[:8]}"
+
+
+def tmux_sessions():
+    out = subprocess.run(TMUX + ["list-sessions", "-F", "#{session_name}"], capture_output=True, text=True)
+    return set(out.stdout.split())
+
+
+def tmux_start(sid, cwd, claude_args):
+    subprocess.run(TMUX + [
+        "new-session", "-d", "-s", tmux_name(sid), "-c", cwd, "-x", "200", "-y", "50",
+        "-e", "COLORTERM=truecolor", SHELL, "-ic", f"claude {claude_args}",
+    ], check=True)
 
 
 def pid_alive(pid):
@@ -134,16 +160,32 @@ def refresh_index():
             t.refresh()
         except OSError:
             pass
+    for sid in [sid for sid, t in transcripts.items() if not t.path.exists()]:
+        del transcripts[sid]
 
 
 def session_rows():
     refresh_index()
     live = live_sessions()
+    in_tmux = tmux_sessions()
     rows = []
+    for sid, cwd in list(launched.items()):
+        if transcripts.get(sid) and transcripts[sid].n_messages or tmux_name(sid) not in in_tmux:
+            launched.pop(sid)
+            continue
+        rows.append({
+            "id": sid, "title": "New session", "cwd": cwd, "resume_cwd": cwd, "resume_cwd_exists": True,
+            "branch": None, "prs": [], "last_prompt": None, "first_ts": None, "last_ts": None,
+            "live": True, "status": live.get(sid, {}).get("status", "starting"), "pid": None, "name": None,
+            "summary": None, "summary_stale": False, "summarizing": False, "tmux": tmux_name(sid),
+            "starred": sid in state["stars"], "note": state["notes"].get(sid, ""),
+            "resume_cmd": f"tmux -L cc-dash attach -t {tmux_name(sid)}",
+        })
     for t in transcripts.values():
         if not t.n_messages:
             continue
         s = live.get(t.id)
+        tmux = tmux_name(t.id) if tmux_name(t.id) in in_tmux else None
         rows.append({
             "id": t.id,
             "title": t.custom_title or t.ai_title or (t.last_prompt or "")[:80] or "(untitled)",
@@ -162,9 +204,13 @@ def session_rows():
             "summary": summaries.get(t.id, {}).get("summary"),
             "summary_stale": summaries.get(t.id, {}).get("key") != t.last_ts,
             "summarizing": t.id in summarizing,
-            "resume_cmd": f"cd {shlex.quote(t.first_cwd or '~')} && claude --resume {t.id}",
+            "tmux": tmux,
+            "starred": t.id in state["stars"],
+            "note": state["notes"].get(t.id, ""),
+            "resume_cmd": f"tmux -L cc-dash attach -t {tmux}" if tmux
+            else f"cd {shlex.quote(t.first_cwd or '~')} && claude --resume {t.id}",
         })
-    rows.sort(key=lambda r: r["last_ts"] or "", reverse=True)
+    rows.sort(key=lambda r: r["last_ts"] or "9", reverse=True)
     return rows
 
 
@@ -247,15 +293,88 @@ async def api_summarize(request):
 
 
 async def api_resume(request):
-    t = transcripts.get(request.match_info["id"])
-    if not t or not t.first_cwd or not os.path.isdir(t.first_cwd):
+    """Start a closed session inside tmux (default) or open it in a Terminator tab."""
+    sid = request.match_info["id"]
+    target = (await request.json()).get("target", "tmux") if request.can_read_body else "tmux"
+    name = tmux_name(sid)
+    hosted = name in tmux_sessions()
+    t = transcripts.get(sid)
+    if not hosted and sid in live_sessions():
+        return web.json_response({"ok": False, "error": "already running in another terminal"}, status=409)
+    if not hosted and (not t or not t.first_cwd or not os.path.isdir(t.first_cwd)):
         return web.json_response({"ok": False, "error": "working directory no longer exists"}, status=400)
-    cmd = f"claude --resume {t.id}; exec $SHELL"
-    subprocess.Popen(
-        ["terminator", "--new-tab", "--working-directory", t.first_cwd, "-x", os.environ.get("SHELL", "zsh"), "-ic", cmd],
-        start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    if target == "terminator":
+        cmd = TMUX + ["attach", "-t", name] if hosted else [SHELL, "-ic", f"claude --resume {sid}; exec {SHELL}"]
+        subprocess.Popen(["terminator", "--new-tab", "--working-directory", t.first_cwd if t else str(Path.home()), "-x", *cmd],
+                         start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif not hosted:
+        tmux_start(sid, t.first_cwd, f"--resume {sid}")
     return web.json_response({"ok": True})
+
+
+async def api_new(request):
+    cwd = os.path.expanduser((await request.json())["cwd"])
+    if not os.path.isdir(cwd):
+        return web.json_response({"ok": False, "error": "no such directory"}, status=400)
+    sid = str(uuid.uuid4())
+    tmux_start(sid, cwd, f"--session-id {sid}")
+    launched[sid] = cwd
+    return web.json_response({"ok": True, "id": sid})
+
+
+async def api_get_state(request):
+    return web.json_response(state)
+
+
+async def api_put_state(request):
+    state.update(await request.json())
+    STATE_FILE.write_text(json.dumps(state))
+    return web.json_response({"ok": True})
+
+
+async def ws_term(request):
+    """Bridge a websocket to `tmux attach` running in a fresh pty. Closing it only detaches."""
+    name = request.match_info["name"]
+    if name not in tmux_sessions():
+        raise web.HTTPNotFound()
+    ws = web.WebSocketResponse(max_msg_size=0)
+    await ws.prepare(request)
+    pid, fd = os.forkpty()
+    if pid == 0:
+        os.environ["TERM"] = "xterm-256color"
+        os.execvp("tmux", TMUX + ["attach", "-t", name])
+    loop = asyncio.get_running_loop()
+    out = asyncio.Queue()
+
+    def on_output():
+        try:
+            out.put_nowait(os.read(fd, 65536))
+        except OSError:
+            loop.remove_reader(fd)
+            out.put_nowait(None)
+
+    async def pump():
+        while (data := await out.get()) is not None:
+            await ws.send_bytes(data)
+        await ws.close()
+
+    loop.add_reader(fd, on_output)
+    pump_task = asyncio.create_task(pump())
+    try:
+        async for msg in ws:
+            m = json.loads(msg.data)
+            if "i" in m:
+                os.write(fd, m["i"].encode())
+            elif "r" in m:
+                cols, rows = m["r"]
+                fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    finally:
+        loop.remove_reader(fd)
+        pump_task.cancel()
+        os.kill(pid, signal.SIGHUP)
+        os.close(fd)
+        await loop.run_in_executor(None, os.waitpid, pid, 0)
+    return ws
 
 
 async def index(request):
@@ -273,6 +392,10 @@ def main():
         web.get("/api/sessions", api_sessions),
         web.post("/api/summarize/{id}", api_summarize),
         web.post("/api/resume/{id}", api_resume),
+        web.post("/api/new", api_new),
+        web.get("/api/state", api_get_state),
+        web.put("/api/state", api_put_state),
+        web.get("/ws/term/{name}", ws_term),
     ])
     app.on_startup.append(on_startup)
     print(f"cc-dash on http://localhost:{PORT}")
